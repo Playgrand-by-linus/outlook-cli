@@ -97,7 +97,26 @@ def test_reply(mock_get):
 
     result = runner.invoke(app, ["mail", "reply", "msg-123", "--body", "Thanks"])
     assert result.exit_code == 0
+    msg.reply.assert_called_once_with(to_all=False)
+    # O365 replies always carry a quoted-thread HTML structure, so the body
+    # is always sent as HTML (plain "\n" would otherwise collapse on render).
+    assert reply_msg.body_type == "HTML"
+    reply_msg.send.assert_called_once()
+
+
+@patch("outlook_cli.commands.mail_cmd.get_account")
+def test_reply_html(mock_get):
+    account = mock_get.return_value
+    mailbox = account.mailbox.return_value
+    msg = MagicMock()
+    reply_msg = MagicMock()
+    msg.reply.return_value = reply_msg
+    mailbox.get_message.return_value = msg
+
+    result = runner.invoke(app, ["mail", "reply", "msg-123", "--body", "<p>Thanks</p>"])
+    assert result.exit_code == 0
     msg.reply.assert_called_once()
+    assert reply_msg.body_type == "HTML"
     reply_msg.send.assert_called_once()
 
 
@@ -107,14 +126,16 @@ def test_reply_all(mock_get):
     mailbox = account.mailbox.return_value
     msg = MagicMock()
     reply_msg = MagicMock()
-    msg.reply_all.return_value = reply_msg
+    msg.reply.return_value = reply_msg
     mailbox.get_message.return_value = msg
 
     result = runner.invoke(app, [
         "mail", "reply", "msg-123", "--body", "Thanks", "--reply-all",
     ])
     assert result.exit_code == 0
-    msg.reply_all.assert_called_once()
+    # O365's Message has no reply_all() method; "reply to all" is
+    # msg.reply(to_all=True).
+    msg.reply.assert_called_once_with(to_all=True)
     reply_msg.send.assert_called_once()
 
 

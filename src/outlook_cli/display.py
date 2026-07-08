@@ -116,7 +116,9 @@ def print_event_table(events: list) -> None:
         info_parts = []
         if getattr(ev, "is_all_day", False):
             info_parts.append("All-day")
-        if getattr(ev, "recurrence", None) is not None:
+        # ev.recurrence is always an EventRecurrence object (never None);
+        # its __bool__ reflects whether recurrence is actually configured.
+        if getattr(ev, "recurrence", None):
             info_parts.append("Recurring")
         info = ", ".join(info_parts)
 

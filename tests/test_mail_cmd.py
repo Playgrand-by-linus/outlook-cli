@@ -80,6 +80,26 @@ def test_send_message(mock_get, mock_account):
     ])
     assert result.exit_code == 0
     new_msg.to.add.assert_called_with("bob@example.com")
+    assert new_msg.body_type == "Text"
+    new_msg.send.assert_called_once()
+
+
+@patch("outlook_cli.commands.mail_cmd.get_account")
+def test_send_message_html(mock_get, mock_account):
+    mock_get.return_value = mock_account
+    new_msg = MagicMock()
+    new_msg.send.return_value = True
+    mock_account.new_message.return_value = new_msg
+
+    result = runner.invoke(app, [
+        "mail", "send",
+        "--to", "bob@example.com",
+        "--subject", "Hi",
+        "--body", "<html><body>Hello!</body></html>",
+    ])
+    assert result.exit_code == 0
+    new_msg.to.add.assert_called_with("bob@example.com")
+    assert new_msg.body_type == "HTML"
     new_msg.send.assert_called_once()
 
 

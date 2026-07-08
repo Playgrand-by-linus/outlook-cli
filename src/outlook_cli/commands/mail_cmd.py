@@ -4,11 +4,28 @@ from datetime import datetime
 from typing import Optional
 
 import typer
+from requests.exceptions import HTTPError
 
 from outlook_cli.auth import get_account
 from outlook_cli.display import console, print_error, print_mail_detail, print_mail_table, print_success
 
 app = typer.Typer(help="Read and send email.")
+
+
+def _get_message_or_exit(mailbox, message_id: str):
+    """Fetch a message by ID, exiting with a friendly error if it doesn't exist.
+
+    Graph returns a 400 HTTPError (not None) for a malformed/nonexistent ID,
+    so both cases are normalized to the same not-found message.
+    """
+    try:
+        msg = mailbox.get_message(object_id=message_id)
+    except HTTPError:
+        msg = None
+    if msg is None:
+        print_error(f"Message not found: {message_id}")
+        raise typer.Exit(1)
+    return msg
 
 
 @app.command()
@@ -47,7 +64,7 @@ def search(
             )
     elif has_filters:
         odata_query = mailbox.new_query()
-        first_filter = True
+        filters = []
 
         if start_date:
             try:
@@ -55,9 +72,7 @@ def search(
             except ValueError:
                 print_error(f"Invalid date format: {start_date} (expected YYYY-MM-DD)")
                 raise typer.Exit(1)
-            clause = odata_query.on_attribute("receivedDateTime") if first_filter else odata_query.chain("and").on_attribute("receivedDateTime")
-            clause.greater_equal(start_dt)
-            first_filter = False
+            filters.append(odata_query.greater_equal("receivedDateTime", start_dt))
 
         if end_date:
             try:
@@ -65,31 +80,24 @@ def search(
             except ValueError:
                 print_error(f"Invalid date format: {end_date} (expected YYYY-MM-DD)")
                 raise typer.Exit(1)
-            clause = odata_query.on_attribute("receivedDateTime") if first_filter else odata_query.chain("and").on_attribute("receivedDateTime")
-            clause.less_equal(end_dt)
-            first_filter = False
+            filters.append(odata_query.less_equal("receivedDateTime", end_dt))
 
         if unread:
-            clause = odata_query.on_attribute("isRead") if first_filter else odata_query.chain("and").on_attribute("isRead")
-            clause.equals(False)
-            first_filter = False
+            filters.append(odata_query.equals("isRead", False))
 
         if important:
-            clause = odata_query.on_attribute("importance") if first_filter else odata_query.chain("and").on_attribute("importance")
-            clause.equals("high")
-            first_filter = False
+            filters.append(odata_query.equals("importance", "high"))
 
         if has_attachments:
-            clause = odata_query.on_attribute("hasAttachments") if first_filter else odata_query.chain("and").on_attribute("hasAttachments")
-            clause.equals(True)
-            first_filter = False
+            filters.append(odata_query.equals("hasAttachments", True))
 
         if sender:
-            clause = odata_query.on_attribute("from/emailAddress/address") if first_filter else odata_query.chain("and").on_attribute("from/emailAddress/address")
-            clause.contains(sender)
-            first_filter = False
+            # "from" resolves via the library's built-in attribute mapping to
+            # from/emailAddress/address. Passing the expanded path directly
+            # hits a casing bug in O365's QueryBuilder that mangles slashes.
+            filters.append(odata_query.contains("from", sender))
 
-        params["query"] = odata_query
+        params["query"] = odata_query.chain_and(*filters) if len(filters) > 1 else filters[0]
 
     messages = list(mail_folder.get_messages(**params))
 
@@ -108,10 +116,7 @@ def read(
     account = get_account()
     mailbox = account.mailbox()
 
-    msg = mailbox.get_message(object_id=message_id)
-    if msg is None:
-        print_error(f"Message not found: {message_id}")
-        raise typer.Exit(1)
+    msg = _get_message_or_exit(mailbox, message_id)
 
     print_mail_detail(msg)
 
@@ -132,6 +137,7 @@ def send(
         new_message.cc.add(cc)
     new_message.subject = subject
     new_message.body = body
+    new_message.body_type = 'HTML' if ('<html' in body.lower() or '<p>' in body.lower() or '<br' in body.lower()) else 'Text'
 
     if new_message.send():
         print_success("Message sent.")
@@ -150,13 +156,15 @@ def reply(
     account = get_account()
     mailbox = account.mailbox()
 
-    msg = mailbox.get_message(object_id=message_id)
-    if msg is None:
-        print_error(f"Message not found: {message_id}")
-        raise typer.Exit(1)
+    msg = _get_message_or_exit(mailbox, message_id)
 
-    reply_msg = msg.reply_all() if reply_all else msg.reply()
-    reply_msg.body = body
+    reply_msg = msg.reply(to_all=reply_all)
+    has_html = '<html' in body.lower() or '<p>' in body.lower() or '<br' in body.lower()
+    # O365 replies always carry a quoted-thread HTML structure, so bare "\n"
+    # newlines collapse when rendered — convert them to <br> unless the
+    # caller already supplied HTML.
+    reply_msg.body = body if has_html else body.replace('\n', '<br>')
+    reply_msg.body_type = 'HTML'
 
     if reply_msg.send():
         target = "all recipients" if reply_all else str(msg.sender)
@@ -175,10 +183,7 @@ def mark(
     account = get_account()
     mailbox = account.mailbox()
 
-    msg = mailbox.get_message(object_id=message_id)
-    if msg is None:
-        print_error(f"Message not found: {message_id}")
-        raise typer.Exit(1)
+    msg = _get_message_or_exit(mailbox, message_id)
 
     if read_flag:
         if msg.mark_as_read():

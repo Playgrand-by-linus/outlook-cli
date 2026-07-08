@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import typer
+from requests.exceptions import HTTPError
 
 from outlook_cli.auth import get_account
 from outlook_cli.display import console, print_error, print_event_detail, print_event_table, print_success
@@ -52,25 +53,34 @@ def list_events(
         print_error("Could not access default calendar.")
         raise typer.Exit(1)
 
-    query = calendar.new_query("start").greater_equal(start_dt)
-    query.chain("and").on_attribute("end").less_equal(end_dt)
+    # The date range is applied via the calendarView endpoint's own
+    # startDateTime/endDateTime params, not as an OData $filter: Graph's
+    # start/end.dateTime is typed Edm.String, so comparing it against a
+    # datetime literal in $filter fails with a type-mismatch 400 error.
+    # The remaining filters below are applied client-side after fetching —
+    # combining calendarView with $filter on nested properties like
+    # location/organizer is unreliable and can 500 server-side.
+    events = list(calendar.get_events(
+        limit=limit,
+        include_recurring=True,
+        start_recurring=start_dt,
+        end_recurring=end_dt,
+    ))
 
     if subject:
-        query.chain("and").on_attribute("subject").contains(subject)
+        events = [e for e in events if subject.lower() in (e.subject or "").lower()]
 
     if location:
-        query.chain("and").on_attribute("location/displayName").contains(location)
+        events = [e for e in events if location.lower() in str((e.location or {}).get("displayName", "")).lower()]
 
     if organizer:
-        query.chain("and").on_attribute("organizer/emailAddress/address").contains(organizer)
+        events = [e for e in events if organizer.lower() in (getattr(e.organizer, "address", "") or "").lower()]
 
     if all_day:
-        query.chain("and").on_attribute("isAllDay").equals(True)
+        events = [e for e in events if e.is_all_day]
 
     if recurring:
-        query.chain("and").on_attribute("recurrence").unequal(None)
-
-    events = list(calendar.get_events(limit=limit, query=query))
+        events = [e for e in events if e.recurrence]
 
     if not events:
         console.print("No events found in the given range.")
@@ -92,7 +102,10 @@ def read(
         print_error("Could not access default calendar.")
         raise typer.Exit(1)
 
-    event = calendar.get_event(object_id=event_id)
+    try:
+        event = calendar.get_event(event_id)
+    except HTTPError:
+        event = None
 
     if not event:
         print_error(f"Event not found: {event_id}")
