@@ -1,5 +1,6 @@
 """CLI integration tests for enhanced mail commands: search filters, reply, mark."""
 
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
@@ -32,6 +33,42 @@ def test_search_sender_filter(mock_get, mock_account):
     result = runner.invoke(app, ["mail", "search", "--from", "alice@example.com"])
     assert result.exit_code == 0
     inbox.get_messages.assert_called_once()
+
+
+@patch("outlook_cli.commands.mail_cmd.print_mail_table")
+@patch("outlook_cli.commands.mail_cmd.get_account")
+def test_search_filter_sorts_and_trims_unordered_results(mock_get, mock_print, mock_account):
+    """Graph rejects $filter combined with $orderby, so a filtered folder
+    query comes back in an unspecified order rather than newest-first.
+    A message that happens to land outside the requested --limit in
+    Graph's internal order must still surface after client-side sorting.
+    """
+    mock_get.return_value = mock_account
+    inbox = mock_account.mailbox().inbox_folder()
+
+    def make_msg(day):
+        msg = MagicMock()
+        msg.received = datetime(2026, 7, day, tzinfo=timezone.utc)
+        msg.subject = f"day-{day}"
+        return msg
+
+    # Deliberately out of chronological order, as an unsorted Graph
+    # response would be. The newest (17th) is buried in the middle.
+    inbox.get_messages.return_value = iter([make_msg(2), make_msg(17), make_msg(9)])
+
+    result = runner.invoke(app, [
+        "mail", "search", "--from", "store@example.com", "--limit", "2",
+    ])
+
+    assert result.exit_code == 0
+
+    # Overfetches instead of trusting Graph's order to already be limited.
+    _, kwargs = inbox.get_messages.call_args
+    assert kwargs["limit"] == 999
+
+    # Trimmed to the requested limit, newest first.
+    displayed = mock_print.call_args[0][0]
+    assert [m.subject for m in displayed] == ["day-17", "day-9"]
 
 
 @patch("outlook_cli.commands.mail_cmd.get_account")

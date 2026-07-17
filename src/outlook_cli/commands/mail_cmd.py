@@ -99,7 +99,19 @@ def search(
 
         params["query"] = odata_query.chain_and(*filters) if len(filters) > 1 else filters[0]
 
+        # Graph rejects $filter combined with $orderby on this endpoint
+        # ("The restriction or sort order is too complex for this operation"),
+        # so filtered results come back in an unspecified order instead of
+        # newest-first. Overfetch and sort client-side below, then trim to
+        # the requested limit, so a filtered search doesn't silently drop
+        # recent matches that land outside Graph's internal ordering.
+        params["limit"] = max(limit, 999)
+
     messages = list(mail_folder.get_messages(**params))
+
+    if has_filters and not query:
+        messages.sort(key=lambda m: m.received, reverse=True)
+        messages = messages[:limit]
 
     if not messages:
         console.print("No messages found.")
