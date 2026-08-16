@@ -24,7 +24,7 @@ A command-line tool for Microsoft Outlook (Work/School accounts). Search, read, 
 ## Installation
 
 ```bash
-git clone https://github.com/mhattingpete/outlook-cli.git
+git clone https://github.com/Playgrand-by-linus/outlook-cli.git
 cd outlook-cli
 uv sync
 ```
